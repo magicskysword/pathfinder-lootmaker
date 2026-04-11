@@ -13,6 +13,58 @@ const router = express.Router();
 
 const EQUIP_TYPE = '装备';
 
+async function syncCharacterEquipmentForAllocation(db, allocationId) {
+  if (!allocationId) return;
+
+  const allocation = await db.get(`
+    SELECT a.id, a.item_id, a.character_id, a.quantity, i.type
+    FROM item_allocations a
+    JOIN items i ON i.id = a.item_id
+    WHERE a.id = ?
+  `, [allocationId]);
+
+  if (!allocation || allocation.type !== EQUIP_TYPE) {
+    await db.run('DELETE FROM character_equipment WHERE allocation_id = ?', [allocationId]);
+    return;
+  }
+
+  await db.run(
+    `UPDATE character_equipment
+     SET quantity = MIN(MAX(COALESCE(quantity, 0), 0), ?),
+         item_id = ?,
+         character_id = ?,
+         updated_at = ?
+     WHERE allocation_id = ?`,
+    [
+      Number(allocation.quantity || 0),
+      allocation.item_id,
+      allocation.character_id,
+      nowIso(),
+      allocationId
+    ]
+  );
+
+  await db.run('DELETE FROM character_equipment WHERE allocation_id = ? AND quantity <= 0', [allocationId]);
+}
+
+async function syncCharacterEquipmentForItem(db, itemId) {
+  if (!itemId) return;
+
+  const item = await db.get('SELECT id, type FROM items WHERE id = ?', [itemId]);
+  if (!item || item.type !== EQUIP_TYPE) {
+    await db.run('DELETE FROM character_equipment WHERE item_id = ?', [itemId]);
+    return;
+  }
+
+  const allocationRows = await db.all(
+    'SELECT id FROM item_allocations WHERE item_id = ? ORDER BY created_at ASC',
+    [itemId]
+  );
+  for (const row of allocationRows) {
+    await syncCharacterEquipmentForAllocation(db, row.id);
+  }
+}
+
 async function loadItemsView(db) {
   const items = await db.all(`
     SELECT id, name, type, slot, quantity, unit_price, weight, description, display_description, created_at, updated_at
@@ -22,9 +74,11 @@ async function loadItemsView(db) {
 
   const allocations = await db.all(`
     SELECT a.id, a.item_id, a.character_id, a.quantity,
+           COALESCE(eq.quantity, 0) AS equipped_quantity,
            c.name AS character_name, c.color AS character_color
     FROM item_allocations a
     JOIN characters c ON c.id = a.character_id
+    LEFT JOIN character_equipment eq ON eq.allocation_id = a.id
     ORDER BY a.created_at ASC
   `);
 
@@ -36,7 +90,8 @@ async function loadItemsView(db) {
       character_id: row.character_id,
       character_name: row.character_name,
       character_color: row.character_color,
-      quantity: Number(row.quantity)
+      quantity: Number(row.quantity),
+      equipped_quantity: Number(row.equipped_quantity || 0)
     });
     allocMap.set(row.item_id, list);
   }
@@ -217,6 +272,7 @@ router.put('/:id', async (req, res, next) => {
     if (target.type === MONEY_TYPE || nextType === MONEY_TYPE) {
       await mergeMoneyItems(db, { names: [target.name, nextName] });
     }
+    await syncCharacterEquipmentForItem(db, id);
 
     const view = await loadItemsView(db);
     let updated = view.find((x) => x.id === id);
@@ -383,19 +439,23 @@ router.post('/:id/allocations', async (req, res, next) => {
     }
 
     const now = nowIso();
+    let activeAllocationId = same?.id || null;
     if (same) {
       await db.run(
         'UPDATE item_allocations SET quantity = ?, updated_at = ? WHERE id = ?',
         [nextAmount, now, same.id]
       );
+      activeAllocationId = same.id;
     } else {
+      activeAllocationId = uuidv4();
       await db.run(
         `INSERT INTO item_allocations
          (id, item_id, character_id, quantity, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?)`,
-        [uuidv4(), itemId, characterId, nextAmount, now, now]
+        [activeAllocationId, itemId, characterId, nextAmount, now, now]
       );
     }
+    await syncCharacterEquipmentForAllocation(db, activeAllocationId);
 
     const items = await loadItemsView(db);
     const updated = items.find((x) => x.id === itemId);

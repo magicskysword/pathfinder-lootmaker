@@ -206,9 +206,20 @@ function grouped(character) {
   const consumables = [];
   const others = [];
   for (const item of character.items || []) {
-    const hasSlot = item.slot != null && String(item.slot).trim() !== '';
-    if (item.type === '装备' && hasSlot) equipment.push(item);
-    else if (item.type === '药水' || item.type === '卷轴') consumables.push(item);
+    const isEquipped = Boolean(item.equipped) || Number(item.equipped_quantity || 0) > 0;
+    const backpackQuantity = Number(item.backpack_quantity || 0);
+    if (item.type === '装备' && isEquipped) {
+      equipment.push({
+        ...item,
+        quantity: Number(item.equipped_quantity || item.quantity || 0)
+      });
+      if (backpackQuantity > 0) {
+        others.push({
+          ...item,
+          quantity: backpackQuantity
+        });
+      }
+    } else if (item.type === '药水' || item.type === '卷轴') consumables.push(item);
     else others.push(item);
   }
   equipment.sort(compareEquipmentBySlot);

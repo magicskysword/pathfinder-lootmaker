@@ -1,7 +1,15 @@
+const { v4: uuidv4 } = require('uuid');
 const { getDb } = require('./index');
+const { nowIso } = require('../utils/time');
 
 async function initDb() {
   const db = await getDb();
+  const equipmentTableExists = await db.get(`
+    SELECT name
+    FROM sqlite_master
+    WHERE type = 'table' AND name = 'character_equipment'
+  `);
+  const shouldBackfillLegacyEquipment = !equipmentTableExists;
 
   await db.exec(`
     CREATE TABLE IF NOT EXISTS characters (
@@ -53,6 +61,19 @@ async function initDb() {
       UNIQUE(item_id, character_id)
     );
 
+    CREATE TABLE IF NOT EXISTS character_equipment (
+      id TEXT PRIMARY KEY,
+      allocation_id TEXT NOT NULL UNIQUE,
+      item_id TEXT NOT NULL,
+      character_id TEXT NOT NULL,
+      quantity REAL NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(allocation_id) REFERENCES item_allocations(id) ON DELETE CASCADE,
+      FOREIGN KEY(item_id) REFERENCES items(id) ON DELETE CASCADE,
+      FOREIGN KEY(character_id) REFERENCES characters(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS loot_records (
       id TEXT PRIMARY KEY,
       item_snapshot TEXT NOT NULL,
@@ -100,10 +121,58 @@ async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_characters_role ON characters(role);
     CREATE INDEX IF NOT EXISTS idx_allocations_item ON item_allocations(item_id);
     CREATE INDEX IF NOT EXISTS idx_allocations_character ON item_allocations(character_id);
+    CREATE INDEX IF NOT EXISTS idx_character_equipment_item ON character_equipment(item_id);
+    CREATE INDEX IF NOT EXISTS idx_character_equipment_character ON character_equipment(character_id);
     CREATE INDEX IF NOT EXISTS idx_buffs_character ON character_buffs(character_id);
     CREATE INDEX IF NOT EXISTS idx_loot_created_at ON loot_records(created_at);
     CREATE INDEX IF NOT EXISTS idx_transactions_type ON transactions(type);
     CREATE INDEX IF NOT EXISTS idx_transactions_created ON transactions(created_at);
+  `);
+
+  if (shouldBackfillLegacyEquipment) {
+    const legacyAllocations = await db.all(`
+      SELECT a.id AS allocation_id, a.item_id, a.character_id, a.quantity
+      FROM item_allocations a
+      JOIN items i ON i.id = a.item_id
+      WHERE i.type = '装备' AND a.quantity > 0
+    `);
+    const now = nowIso();
+    for (const row of legacyAllocations) {
+      await db.run(
+        `INSERT INTO character_equipment
+         (id, allocation_id, item_id, character_id, quantity, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          uuidv4(),
+          row.allocation_id,
+          row.item_id,
+          row.character_id,
+          Number(row.quantity || 0),
+          now,
+          now
+        ]
+      );
+    }
+  }
+
+  await db.run(`
+    DELETE FROM character_equipment
+    WHERE allocation_id NOT IN (SELECT id FROM item_allocations)
+       OR item_id NOT IN (SELECT id FROM items WHERE type = '装备')
+       OR character_id NOT IN (SELECT id FROM characters)
+  `);
+
+  await db.run(`
+    UPDATE character_equipment
+    SET quantity = MIN(
+      MAX(COALESCE(quantity, 0), 0),
+      COALESCE((SELECT quantity FROM item_allocations WHERE id = allocation_id), 0)
+    )
+  `);
+
+  await db.run(`
+    DELETE FROM character_equipment
+    WHERE quantity <= 0
   `);
 }
 

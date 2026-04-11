@@ -270,27 +270,12 @@
                 </n-tab-pane>
 
                 <!-- Items Tab -->
-                <n-tab-pane name="items" tab="📦 物品统计">
-                  <div class="char-items-content">
-                    <div class="char-items-summary">
-                      总价值: <strong>{{ charTotalValue }} gp</strong> ·
-                      物品数: <strong>{{ selectedChar.items?.length || 0 }}</strong>
-                    </div>
-                    <div v-if="!selectedChar.items?.length" class="empty-state small">暂无物品</div>
-                    <div v-else class="char-items-list">
-                      <div
-                        v-for="item in selectedChar.items"
-                        :key="item.item_id"
-                        class="char-item-row"
-                      >
-                        <span class="type-badge small">{{ item.type }}</span>
-                        <span class="ci-name">{{ item.name }}</span>
-                        <span class="ci-qty">×{{ item.quantity }}</span>
-                        <span class="ci-price">{{ item.unit_price }} gp</span>
-                        <span class="ci-total">= {{ (item.quantity * item.unit_price).toFixed(1) }} gp</span>
-                      </div>
-                    </div>
-                  </div>
+                <n-tab-pane name="items" tab="🎒 装备与背包">
+                  <CharacterInventoryPanel
+                    :character="selectedChar"
+                    :warehouse-items="items"
+                    @changed="handleCharacterInventoryChanged"
+                  />
                 </n-tab-pane>
 
                 <!-- Buff Tab -->
@@ -340,36 +325,83 @@
             <n-button type="primary" @click="txModalShow = true; resetTxForm()">✦ 新建记录</n-button>
             <div class="spacer"></div>
             <div class="tx-summary" v-if="txSummary">
-              <span class="tx-s-income">收入: {{ txSummary.total_income.toFixed(1) }} gp</span>
-              <span class="tx-s-expense">支出: {{ txSummary.total_expense.toFixed(1) }} gp</span>
+              <span class="tx-s-income">收入: {{ formatAmount(txSummary.total_income) }} gp</span>
+              <span class="tx-s-expense">支出: {{ formatAmount(txSummary.total_expense) }} gp</span>
+              <span class="tx-s-consume">消耗: {{ formatAmount(txSummary.total_consume || 0) }} gp</span>
               <span class="tx-s-balance" :class="{ positive: txSummary.balance >= 0, negative: txSummary.balance < 0 }">
-                余额: {{ txSummary.balance.toFixed(1) }} gp
+                余额: {{ formatAmount(txSummary.balance) }} gp
               </span>
             </div>
           </div>
 
           <div class="tx-list">
             <div
-              v-for="tx in transactions"
-              :key="tx.id"
-              class="tx-card ornate-frame"
-              :class="tx.type"
+              v-for="entry in transactionFeed"
+              :key="entry.key"
             >
-              <div class="tx-header">
-                <span class="tx-type-badge" :class="tx.type">
-                  {{ tx.type === 'income' ? '📈 收入' : '📉 支出' }}
-                </span>
-                <span class="tx-date">{{ formatDate(tx.created_at) }}</span>
+              <div
+                v-if="entry.kind === 'consume-group'"
+                class="tx-card ornate-frame consume-group"
+              >
+                <div class="tx-header">
+                  <span class="tx-type-badge consume">🧪 消耗</span>
+                  <span class="tx-date">
+                    {{ formatDate(entry.items[0]?.created_at) }}
+                    <template v-if="entry.items.length > 1">
+                      · 连续 {{ entry.items.length }} 条
+                    </template>
+                  </span>
+                </div>
+                <div class="tx-desc">
+                  {{ entry.summaryText }}
+                </div>
+                <div class="tx-amounts">
+                  <span>📦 物品价值: {{ formatAmount(entry.total) }} gp</span>
+                </div>
+                <div class="tx-actions">
+                  <n-button size="small" quaternary @click="toggleConsumeGroup(entry.key)">
+                    {{ expandedConsumeGroupKeys.includes(entry.key) ? '收起详情' : '展开详情' }}
+                  </n-button>
+                </div>
+                <div v-if="expandedConsumeGroupKeys.includes(entry.key)" class="tx-group-detail">
+                  <div
+                    v-for="tx in entry.items"
+                    :key="tx.id"
+                    class="tx-subitem"
+                  >
+                    <div class="tx-subitem-main">
+                      <div class="tx-subitem-desc">{{ tx.description }}</div>
+                      <div class="tx-subitem-meta">
+                        <span>{{ formatDate(tx.created_at) }}</span>
+                        <span>总计 {{ formatAmount(tx.total_value) }} gp</span>
+                        <span v-if="tx.note">{{ tx.note }}</span>
+                      </div>
+                    </div>
+                    <button class="icon-btn danger small" @click="deleteTx(tx)">🗑</button>
+                  </div>
+                </div>
               </div>
-              <div class="tx-desc">{{ tx.description }}</div>
-              <div class="tx-amounts">
-                <span v-if="tx.gp_amount">🪙 GP: {{ tx.gp_amount }}</span>
-                <span v-if="tx.item_value">📦 物品: {{ tx.item_value }} gp</span>
-                <span class="tx-total">总计: {{ tx.total_value }} gp</span>
-              </div>
-              <div v-if="tx.note" class="tx-note muted">{{ tx.note }}</div>
-              <div class="tx-actions">
-                <button class="icon-btn danger small" @click="deleteTx(tx)">🗑</button>
+              <div
+                v-else
+                class="tx-card ornate-frame"
+                :class="entry.type"
+              >
+                <div class="tx-header">
+                  <span class="tx-type-badge" :class="entry.type">
+                    {{ txTypeLabel(entry.type) }}
+                  </span>
+                  <span class="tx-date">{{ formatDate(entry.created_at) }}</span>
+                </div>
+                <div class="tx-desc">{{ entry.description }}</div>
+                <div class="tx-amounts">
+                  <span v-if="entry.gp_amount">🪙 GP: {{ formatAmount(entry.gp_amount) }}</span>
+                  <span v-if="entry.item_value">📦 物品: {{ formatAmount(entry.item_value) }} gp</span>
+                  <span class="tx-total">总计: {{ formatAmount(entry.total_value) }} gp</span>
+                </div>
+                <div v-if="entry.note" class="tx-note muted">{{ entry.note }}</div>
+                <div class="tx-actions">
+                  <button class="icon-btn danger small" @click="deleteTx(entry)">🗑</button>
+                </div>
               </div>
             </div>
             <div v-if="!transactions.length" class="empty-state">
@@ -559,6 +591,7 @@
             <n-space>
               <n-radio value="income">📈 收入</n-radio>
               <n-radio value="expense">📉 支出</n-radio>
+              <n-radio value="consume">🧪 消耗</n-radio>
             </n-space>
           </n-radio-group>
         </div>
@@ -738,6 +771,7 @@ import {
 import { apiRequest } from '../utils/api';
 import ItemEditModal from '../components/ItemEditModal.vue';
 import AiInputModal from '../components/AiInputModal.vue';
+import CharacterInventoryPanel from '../components/CharacterInventoryPanel.vue';
 
 const message = useMessage();
 const activeTab = ref('warehouse');
@@ -832,9 +866,42 @@ function getRemainingValue(item) {
 }
 
 function formatAmount(value) {
-  const num = Number(value || 0);
+  const raw = Number(value || 0);
+  const num = Math.abs(raw) < 1e-9 ? 0 : raw;
   if (!Number.isFinite(num)) return '0';
   return num.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+}
+
+function parseConsumeDescription(description) {
+  const text = String(description || '').trim();
+  const match = text.match(/ 消耗 (.+?) ×([0-9][0-9,\.]*)$/);
+  if (!match) return null;
+  return {
+    itemName: String(match[1] || '').trim(),
+    quantity: Number(String(match[2] || '').replace(/,/g, ''))
+  };
+}
+
+function buildConsumeGroupSummary(items) {
+  const grouped = new Map();
+  const fallback = [];
+
+  for (const tx of items || []) {
+    const parsed = parseConsumeDescription(tx?.description);
+    if (!parsed || !parsed.itemName || !Number.isFinite(parsed.quantity)) {
+      fallback.push(String(tx?.description || '').trim());
+      continue;
+    }
+    grouped.set(parsed.itemName, (grouped.get(parsed.itemName) || 0) + parsed.quantity);
+  }
+
+  if (!grouped.size) {
+    const text = fallback.filter(Boolean).join('，');
+    return text ? `消耗：${text}` : '消耗';
+  }
+
+  const parts = [...grouped.entries()].map(([itemName, quantity]) => `${itemName} x${formatAmount(quantity)}`);
+  return `消耗：${parts.join('，')}`;
 }
 
 function normalizeMergeSlot(slot) {
@@ -1119,6 +1186,7 @@ async function saveInlineEdit(row) {
   editingCell.field = '';
   try {
     await apiRequest(`/api/items/${row.id}`, { method: 'PUT', body: { ...row } });
+    await Promise.all([loadItems(), loadCharacters()]);
   } catch (error) {
     message.error(error.message || '保存失败');
     await loadItems();
@@ -1147,7 +1215,7 @@ async function onItemModalSave(data) {
       message.success('物品已创建');
     }
     itemModalShow.value = false;
-    await loadItems();
+    await Promise.all([loadItems(), loadCharacters()]);
   } catch (error) {
     message.error(error.message || '保存物品失败');
   }
@@ -1191,7 +1259,7 @@ async function submitAllocation() {
     });
     if (data?.item) message.success('分配成功');
     allocationModal.value = false;
-    await loadItems();
+    await Promise.all([loadItems(), loadCharacters()]);
   } catch (error) {
     if (error.status === 409 && error.payload?.requires_confirm) {
       const confirmed = window.confirm(`${error.payload.message}，是否改为抢占分配？`);
@@ -1208,7 +1276,7 @@ async function submitAllocation() {
 async function removeAllocation(itemId, characterId) {
   try {
     await apiRequest(`/api/items/${itemId}/allocations/${characterId}`, { method: 'DELETE' });
-    await loadItems();
+    await Promise.all([loadItems(), loadCharacters()]);
   } catch (error) {
     message.error(error.message || '移除分配失败');
   }
@@ -1228,11 +1296,6 @@ const roleOptions = computed(() => [
 const selectedChar = computed(() =>
   characters.value.find((x) => x.id === selectedCharId.value) || null
 );
-
-const charTotalValue = computed(() => {
-  if (!selectedChar.value?.items?.length) return '0.0';
-  return selectedChar.value.items.reduce((sum, i) => sum + (i.quantity * i.unit_price), 0).toFixed(1);
-});
 
 const characterForm = reactive({
   id: '', name: '', role: 'PL', color: '#5B8FF9', notes: ''
@@ -1256,13 +1319,19 @@ function openNewCharacterModal() {
   newCharModalShow.value = true;
 }
 
-function selectCharacter(ch) {
+function syncCharacterForm(ch) {
+  if (!ch) return;
   selectedCharId.value = ch.id;
   characterForm.id = ch.id;
   characterForm.name = ch.name;
   characterForm.role = ch.role;
   characterForm.color = ch.color;
   characterForm.notes = ch.notes || '';
+}
+
+function selectCharacter(ch, options = {}) {
+  syncCharacterForm(ch);
+  if (options.keepTab) return;
   charDetailTab.value = 'edit';
 }
 
@@ -1361,9 +1430,18 @@ async function removeBuff(characterId, buffId) {
   }
 }
 
+async function handleCharacterInventoryChanged(payload = {}) {
+  const tasks = [];
+  if (payload.reloadCharacters !== false) tasks.push(loadCharacters());
+  if (payload.reloadItems !== false) tasks.push(loadItems());
+  if (payload.reloadTransactions) tasks.push(loadTransactions());
+  await Promise.all(tasks);
+}
+
 // --- Transaction Management ---
 const txModalShow = ref(false);
 const txForm = reactive({ type: 'income', description: '', gp_amount: 0, item_value: 0, note: '' });
+const expandedConsumeGroupKeys = ref([]);
 
 function resetTxForm() {
   txForm.type = 'income';
@@ -1397,6 +1475,61 @@ async function deleteTx(tx) {
   } catch (error) {
     message.error(error.message || '删除失败');
   }
+}
+
+const transactionFeed = computed(() => {
+  const list = transactions.value || [];
+  const result = [];
+
+  for (let index = 0; index < list.length; index += 1) {
+    const current = list[index];
+    if (current.type !== 'consume') {
+      result.push({
+        ...current,
+        kind: 'tx',
+        key: current.id
+      });
+      continue;
+    }
+
+    const group = [current];
+    while (index + 1 < list.length && list[index + 1].type === 'consume') {
+      group.push(list[index + 1]);
+      index += 1;
+    }
+
+    if (group.length === 1) {
+      result.push({
+        ...current,
+        kind: 'tx',
+        key: current.id
+      });
+      continue;
+    }
+
+    result.push({
+      kind: 'consume-group',
+      key: `consume-group-${group[0].id}`,
+      items: group,
+      total: group.reduce((sum, row) => sum + Number(row.total_value || 0), 0),
+      summaryText: buildConsumeGroupSummary(group)
+    });
+  }
+
+  return result;
+});
+
+function toggleConsumeGroup(key) {
+  const index = expandedConsumeGroupKeys.value.indexOf(key);
+  if (index >= 0) expandedConsumeGroupKeys.value.splice(index, 1);
+  else expandedConsumeGroupKeys.value.push(key);
+}
+
+function txTypeLabel(type) {
+  if (type === 'income') return '📈 收入';
+  if (type === 'expense') return '📉 支出';
+  if (type === 'consume') return '🧪 消耗';
+  return type;
 }
 
 // --- AI Modal ---
@@ -1465,7 +1598,7 @@ async function onAiConfirm(result) {
     }
     if (lootItems.length) {
       message.success(`AI 已录入 ${lootItems.length} 个物品`);
-      await loadItems();
+      await Promise.all([loadItems(), loadCharacters()]);
     }
   } catch (error) {
     message.error(error.message || '录入失败');
@@ -1525,7 +1658,7 @@ async function confirmDelete() {
     }
 
     deleteModalShow.value = false;
-    await Promise.all([loadItems(), loadTransactions()]);
+    await Promise.all([loadItems(), loadCharacters(), loadTransactions()]);
   } catch (error) {
     message.error(error.message || '删除失败');
   }
@@ -1537,7 +1670,7 @@ async function loadCharacters() {
     characters.value = await apiRequest('/api/characters');
     if (selectedCharId.value) {
       const ch = characters.value.find((x) => x.id === selectedCharId.value);
-      if (ch) selectCharacter(ch);
+      if (ch) syncCharacterForm(ch);
     }
   } catch (error) {
     message.error(error.message || '加载角色失败');
@@ -1810,6 +1943,7 @@ onMounted(async () => {
 }
 .tx-s-income { color: #2ecc71; }
 .tx-s-expense { color: #e74c3c; }
+.tx-s-consume { color: #e67e22; }
 .tx-s-balance { font-weight: 600; }
 .tx-s-balance.positive { color: #2ecc71; }
 .tx-s-balance.negative { color: #e74c3c; }
@@ -1823,6 +1957,8 @@ onMounted(async () => {
 }
 .tx-card.income { border-left-color: #2ecc71; }
 .tx-card.expense { border-left-color: #e74c3c; }
+.tx-card.consume,
+.tx-card.consume-group { border-left-color: #e67e22; }
 .tx-header {
   display: flex; justify-content: space-between; align-items: center;
   margin-bottom: 6px;
@@ -1833,12 +1969,51 @@ onMounted(async () => {
 }
 .tx-type-badge.income { background: rgba(46, 204, 113, 0.12); color: #2ecc71; }
 .tx-type-badge.expense { background: rgba(231, 76, 60, 0.12); color: #e74c3c; }
+.tx-type-badge.consume { background: rgba(230, 126, 34, 0.14); color: #e67e22; }
 .tx-date { font-size: 12px; color: var(--text-secondary); }
 .tx-desc { font-weight: 500; color: var(--text-bright); margin-bottom: 6px; }
 .tx-amounts { display: flex; gap: 16px; font-size: 13px; color: var(--text-secondary); }
 .tx-total { color: var(--gold); font-weight: 600; }
 .tx-note { font-size: 12px; margin-top: 4px; }
 .tx-actions { position: absolute; top: 10px; right: 10px; }
+.consume-group .tx-actions {
+  position: static;
+  margin-top: 10px;
+}
+.tx-group-detail {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tx-subitem {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(230, 126, 34, 0.16);
+  border-radius: var(--radius);
+  background: rgba(230, 126, 34, 0.05);
+}
+.tx-subitem-main {
+  min-width: 0;
+  flex: 1;
+}
+.tx-subitem-desc {
+  color: var(--text-bright);
+  font-size: 13px;
+  font-weight: 500;
+}
+.tx-subitem-meta {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
 
 .tx-form { display: flex; flex-direction: column; gap: 14px; }
 .form-row { display: flex; gap: 12px; }

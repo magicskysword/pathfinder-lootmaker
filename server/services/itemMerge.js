@@ -35,10 +35,12 @@ async function loadItemsAndAllocations(db, itemIds) {
     itemIds
   );
   const allocations = await db.all(
-    `SELECT id, item_id, character_id, quantity
-     FROM item_allocations
-     WHERE item_id IN (${placeholders})
-     ORDER BY created_at ASC`,
+    `SELECT a.id, a.item_id, a.character_id, a.quantity,
+            COALESCE(eq.quantity, 0) AS equipped_quantity
+     FROM item_allocations a
+     LEFT JOIN character_equipment eq ON eq.allocation_id = a.id
+     WHERE a.item_id IN (${placeholders})
+     ORDER BY a.created_at ASC`,
     itemIds
   );
 
@@ -99,7 +101,10 @@ async function mergeItemsByIds(db, itemIds, options = {}) {
   const allocByCharacter = new Map();
   for (const row of allocations) {
     const key = row.character_id;
-    allocByCharacter.set(key, (allocByCharacter.get(key) || 0) + Number(row.quantity || 0));
+    const current = allocByCharacter.get(key) || { quantity: 0, equippedQuantity: 0 };
+    current.quantity += Number(row.quantity || 0);
+    current.equippedQuantity += Number(row.equipped_quantity || 0);
+    allocByCharacter.set(key, current);
   }
 
   const now = nowIso();
@@ -122,14 +127,28 @@ async function mergeItemsByIds(db, itemIds, options = {}) {
   );
 
   await db.run('DELETE FROM item_allocations WHERE item_id = ?', [template.id]);
-  for (const [characterId, qty] of allocByCharacter.entries()) {
+  for (const [characterId, payload] of allocByCharacter.entries()) {
+    const qty = Number(payload?.quantity || 0);
+    const equippedQuantity = Math.min(
+      qty,
+      Math.max(0, Number(payload?.equippedQuantity || 0))
+    );
     if (!characterId || qty <= 0) continue;
+    const allocationId = uuidv4();
     await db.run(
       `INSERT INTO item_allocations
        (id, item_id, character_id, quantity, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?)`,
-      [uuidv4(), template.id, characterId, qty, now, now]
+      [allocationId, template.id, characterId, qty, now, now]
     );
+    if (template.type === '装备' && equippedQuantity > 0) {
+      await db.run(
+        `INSERT INTO character_equipment
+         (id, allocation_id, item_id, character_id, quantity, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [uuidv4(), allocationId, template.id, characterId, equippedQuantity, now, now]
+      );
+    }
   }
 
   const others = uniqueIds.filter((x) => x !== template.id);
