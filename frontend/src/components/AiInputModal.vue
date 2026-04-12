@@ -61,21 +61,40 @@
         <div class="result-section">
           <label class="form-label">解析结果</label>
 
-          <!-- Parsed items preview -->
-          <div v-if="resultItems.length" class="parsed-items">
+          <div v-if="isExpenseMode">
+            <div v-if="resultSellItems.length" class="parsed-group">
+              <div class="parsed-group-title">卖出 / 金币支出项</div>
+              <div class="parsed-items">
+                <div v-for="(item, idx) in resultSellItems" :key="`sell-${idx}`" class="parsed-item-row">
+                  <n-checkbox v-model:checked="item._selected" />
+                  <span class="pi-name">{{ item._resolvedName || `#${item.seq}` }}</span>
+                  <span class="pi-type">{{ item._resolvedType }}</span>
+                  <span class="pi-qty">×{{ item.quantity || 1 }}</span>
+                  <span class="pi-price">返还 {{ item.refund_percent ?? 100 }}%</span>
+                </div>
+              </div>
+            </div>
+
+            <div v-if="resultBuyItems.length" class="parsed-group">
+              <div class="parsed-group-title">购入物品</div>
+              <div class="parsed-items">
+                <div v-for="(item, idx) in resultBuyItems" :key="`buy-${idx}`" class="parsed-item-row">
+                  <n-checkbox v-model:checked="item._selected" />
+                  <span class="pi-name">{{ item.name || '未命名' }}</span>
+                  <span class="pi-type">{{ item.type || '其他' }}</span>
+                  <span class="pi-qty">×{{ item.quantity || 1 }}</span>
+                  <span class="pi-price">{{ item.unit_price || 0 }} gp</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div v-else-if="resultItems.length" class="parsed-items">
             <div v-for="(item, idx) in resultItems" :key="idx" class="parsed-item-row">
               <n-checkbox v-model:checked="item._selected" />
-              <template v-if="isExpenseMode">
-                <span class="pi-name">{{ item._resolvedName || `#${item.seq}` }}</span>
-                <span class="pi-type">{{ item._resolvedType }}</span>
-                <span class="pi-qty">×{{ item.quantity || 1 }}</span>
-              </template>
-              <template v-else>
-                <span class="pi-name">{{ item.name || '未命名' }}</span>
-                <span class="pi-type">{{ item.type || '其他' }}</span>
-                <span class="pi-qty">×{{ item.quantity || 1 }}</span>
-                <span class="pi-price">{{ item.unit_price || 0 }} gp</span>
-              </template>
+              <span class="pi-name">{{ item.name || '未命名' }}</span>
+              <span class="pi-type">{{ item.type || '其他' }}</span>
+              <span class="pi-qty">×{{ item.quantity || 1 }}</span>
+              <span class="pi-price">{{ item.unit_price || 0 }} gp</span>
             </div>
           </div>
 
@@ -112,6 +131,7 @@ const props = defineProps({
   show: Boolean,
   title: { type: String, default: '🤖 AI 智能录入' },
   parseEndpoint: { type: String, default: '/api/ai/parse-loot' },
+  expenseMode: { type: Boolean, default: false },
   expenseContext: { type: String, default: '' },
   warehouseItems: { type: Array, default: () => [] }
 });
@@ -137,7 +157,7 @@ const providerOptions = computed(() =>
   }))
 );
 
-const isExpenseMode = computed(() => !!props.expenseContext);
+const isExpenseMode = computed(() => props.expenseMode);
 
 const resultItems = computed(() => {
   if (!result.value) return [];
@@ -153,6 +173,16 @@ const resultItems = computed(() => {
     });
   }
   return raw;
+});
+
+const resultSellItems = computed(() => {
+  if (!result.value || !isExpenseMode.value) return [];
+  return resultItems.value;
+});
+
+const resultBuyItems = computed(() => {
+  if (!result.value || !isExpenseMode.value) return [];
+  return result.value.buy_items || [];
 });
 
 
@@ -209,9 +239,14 @@ async function doParseAi() {
     const data = await apiRequest(props.parseEndpoint, { method: 'POST', body });
     rawText.value = data.raw_text || '';
     const parsed = data.parsed || {};
-    // Add _selected flag to each item
     const items = (parsed.loot_items || parsed.items || []).map((x) => ({ ...x, _selected: true }));
-    result.value = { ...parsed, loot_items: items };
+    const buyItems = (parsed.buy_items || []).map((x) => ({ ...x, _selected: true }));
+    result.value = {
+      ...parsed,
+      loot_items: items,
+      items,
+      buy_items: buyItems
+    };
     message.success('AI解析完成，请确认结果');
   } catch (error) {
     message.error(error.message || 'AI解析失败');
@@ -222,8 +257,10 @@ async function doParseAi() {
 
 function confirmResult() {
   const selectedItems = resultItems.value.filter((x) => x._selected);
+  const selectedBuyItems = resultBuyItems.value.filter((x) => x._selected);
   emit('confirm', {
     items: selectedItems,
+    buyItems: selectedBuyItems,
     character: result.value?.character || null,
     buffs: result.value?.buffs || [],
     note: result.value?.note || ''
@@ -328,6 +365,22 @@ watch(() => props.show, (v) => {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.parsed-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.parsed-group + .parsed-group {
+  margin-top: 8px;
+}
+
+.parsed-group-title {
+  font-size: 12px;
+  color: var(--gold);
+  letter-spacing: 0.5px;
 }
 
 .parsed-item-row {

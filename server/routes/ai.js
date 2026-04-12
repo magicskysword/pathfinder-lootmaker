@@ -14,7 +14,7 @@ const DEFAULT_SLOT_OPTIONS = [
 // ===== Data Structure Templates =====
 
 const LOOT_STRUCTURE = '{"loot_items":[{"name":"","type":"","slot":null,"quantity":1,"unit_price":0,"weight":0,"description":""}],"note":""}';
-const EXPENSE_STRUCTURE = '{"items":[{"seq":1,"quantity":1}]}';
+const EXPENSE_STRUCTURE = '{"items":[{"seq":1,"quantity":1,"refund_percent":100}],"buy_items":[{"name":"","type":"其他","slot":null,"quantity":1,"unit_price":0,"weight":0,"description":"","display_description":""}],"note":""}';
 const CHARACTER_STRUCTURE = '{"character":{"name":"","role":"PL","color":"#5B8FF9"},"buffs":[{"level":"天级","name":"","resource_note":"","description":""}],"items":[{"name":"","type":"其他","slot":null,"quantity":1,"unit_price":0,"weight":0,"description":""}]}';
 
 // ===== Default Prompts (used when no custom prompt is configured) =====
@@ -33,15 +33,25 @@ const DEFAULT_LOOT_PROMPT = [
 ].join('\n');
 
 const DEFAULT_EXPENSE_PROMPT = [
-  '你是TRPG 支出解析助手。',
+  '你是TRPG 交易解析助手。',
   '{{game_rules}}',
   '用户会提供一份库存列表，格式为：#序号 物品名 ×数量',
-  '用户会告诉你哪些物品需要支出以及支出数量。',
+  '这里的模式是交易模式。',
+  '用户会告诉你哪些库存物品需要卖出/删除，以及可能购入哪些新物品。',
+  '返还百分比表示卖出后可获得的 GP 占原价的比例。',
   '请把输入解析成严格JSON，不要输出任何JSON以外文字。',
   'JSON结构：{{expense_structure}}',
-  'seq是库存列表中的序号（正整数），quantity是支出数量（正整数）。',
+  '当前仓库已有type：{{types}}。',
+  'buy_items中的type必须从上述列表中选择；若不确定，使用"其他"。',
+  '当前仓库已有装备槽位：{{slots}}。',
+  'buy_items中当type为"装备"时，slot必须从上述槽位中选择；当type不是"装备"时，slot必须为null。',
+  'items表示要从库存删除/出售的物品；seq是库存列表中的序号（正整数），quantity是数量（正整数），refund_percent是出售返还的GP百分比（0到100之间的数字）。',
+  'buy_items表示要购入并加入仓库的新物品，结构与Loot物品一致；type必须使用已有类型，装备的slot必须使用已有槽位，非装备slot填null。',
+  '如果用户明确提到“按X%出售”“半价出售”“卖出获得X%”，请填写refund_percent。',
+  '如果用户没有明确说明返还比例，refund_percent默认填写100。',
+  '如果是购买物品，请同时在items里加入对应的金币/金钱支出项，并把该条refund_percent设为0，表示这部分金币被花掉而不是出售返还。',
   '所有数量必须使用正数。',
-  '只输出用户明确提到要支出的物品，不要输出库存列表中未提及的物品。'
+  '只输出用户明确提到的卖出项、金币支出项和购入项，不要输出库存列表中未提及的其他物品。'
 ].join('\n');
 
 const DEFAULT_CHARACTER_PROMPT = [
@@ -255,7 +265,11 @@ router.post('/parse-expense', async (req, res, next) => {
       return res.status(400).json({ message: '请先在设置页配置AI Provider' });
     }
 
-    const expensePrompt = await buildFinalPrompt(db, 'prompt_expense', DEFAULT_EXPENSE_PROMPT);
+    const lootContext = await loadLootTypeAndSlotContext(db);
+    const expensePrompt = await buildFinalPrompt(db, 'prompt_expense', DEFAULT_EXPENSE_PROMPT, {
+      types: JSON.stringify(lootContext.types),
+      slots: JSON.stringify(lootContext.slots)
+    });
     const caption = await maybeCaptionImage(db, provider, imageDataUrl || null);
     const mergedInput = [inputText, caption.text].filter(Boolean).join('\n\n');
 

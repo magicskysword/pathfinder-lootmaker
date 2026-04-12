@@ -16,7 +16,7 @@
     <div class="mode-switch">
       <n-radio-group v-model:value="mode" size="large">
         <n-radio-button value="loot">📥 Loot模式</n-radio-button>
-        <n-radio-button value="expense">📤 支出模式</n-radio-button>
+        <n-radio-button value="expense">💱 交易模式</n-radio-button>
       </n-radio-group>
     </div>
 
@@ -181,37 +181,55 @@
     <!-- ==================== EXPENSE MODE ==================== -->
     <template v-if="mode === 'expense'">
       <div class="expense-layout">
-        <!-- LEFT: Expense Items -->
+        <!-- LEFT: Trade Editor -->
         <div class="loot-main">
-          <!-- Toolbar -->
           <div class="ornate-frame toolbar-bar">
             <div class="toolbar-row">
-              <n-button type="primary" @click="addExpenseItem">✦ 新增支出</n-button>
+              <n-button type="primary" @click="addExpenseItem">✦ 新增卖出项</n-button>
+              <n-button @click="addTradeBuyItem">🛍 新增购入项</n-button>
               <n-button @click="openAiModal">🤖 AI录入</n-button>
               <div class="spacer"></div>
               <n-button quaternary @click="clearExpenseDraft" class="danger-text">🗑 清空草稿</n-button>
-              <n-button type="primary" :loading="publishing" @click="publishExpense">📜 确认支出</n-button>
+              <n-button type="primary" :loading="publishing" @click="publishExpense">📜 确认交易</n-button>
             </div>
             <div class="toolbar-hint">
-              支出模式：从仓库选择物品记录消耗/售出，或手动输入支出项。AI录入时将包含当前库存上下文。
+              交易模式：可从仓库卖出物品并设置返还比例，也可录入新购入的物品。若要支付金币，请在卖出列表中加入金币项并将返还设为 0%。AI 录入时会同时解析卖出项与购入项。
             </div>
           </div>
 
-          <!-- Notes (above items) -->
           <div class="ornate-frame notes-section">
             <h3 class="section-title">📝 备注</h3>
             <n-input
               v-model:value="expenseNote"
               type="textarea"
-              placeholder="支出备注（会写入流水记录）"
+              placeholder="交易备注（会写入流水记录）"
               :autosize="{ minRows: 2, maxRows: 4 }"
             />
+            <div class="trade-summary-grid">
+              <div class="trade-summary-card">
+                <span class="ts-label">总获得 GP</span>
+                <strong class="ts-value">{{ formatAmount(expenseRefundTotal) }} gp</strong>
+              </div>
+              <div class="trade-summary-card">
+                <span class="ts-label">总出售返还率</span>
+                <strong class="ts-value">{{ formatAmount(expenseOverallPercent) }}%</strong>
+              </div>
+              <div class="trade-summary-card">
+                <span class="ts-label">总购入 GP</span>
+                <strong class="ts-value">{{ formatAmount(tradePurchaseTotal) }} gp</strong>
+              </div>
+              <div class="trade-summary-card">
+                <span class="ts-label">净金币变化</span>
+                <strong class="ts-value" :class="{ positive: tradeNetGpDelta >= 0, negative: tradeNetGpDelta < 0 }">
+                  {{ tradeNetGpDelta >= 0 ? '+' : '' }}{{ formatAmount(tradeNetGpDelta) }} gp
+                </strong>
+              </div>
+            </div>
           </div>
 
-          <!-- Expense Items -->
           <div class="ornate-frame pool-area pool-area-expand">
             <div class="pool-header">
-              <h3 class="section-title">📤 支出物品列表</h3>
+              <h3 class="section-title">📤 卖出 / 金币支出项</h3>
               <span class="pool-count">{{ expenseItems.length }} 项</span>
             </div>
             <table class="fantasy-table loot-table" v-if="expenseItems.length">
@@ -222,6 +240,7 @@
                   <th>类型</th>
                   <th style="width:130px">数量</th>
                   <th style="width:140px">单价(GP)</th>
+                  <th style="width:120px">返还%</th>
                   <th style="width:100px">操作</th>
                 </tr>
               </thead>
@@ -258,6 +277,15 @@
                   <td><n-input-number v-model:value="item.quantity" :min="1" size="small" style="width:120px" /></td>
                   <td><n-input-number v-model:value="item.unit_price" :min="0" size="small" style="width:130px" :disabled="!!item.warehouse_id" /></td>
                   <td>
+                    <n-input-number
+                      v-model:value="item.refund_percent"
+                      :min="0"
+                      :max="100"
+                      size="small"
+                      style="width:110px"
+                    />
+                  </td>
+                  <td>
                     <div class="row-actions">
                       <button class="icon-btn danger" title="删除" @click="removeExpenseItem(item.client_id)">🗑</button>
                     </div>
@@ -266,15 +294,67 @@
               </tbody>
             </table>
             <div v-else class="empty-hint">
-              暂无支出项，点击上方「新增支出」或使用「AI录入」
+              暂无卖出项，点击上方「新增卖出项」或使用「AI录入」
+            </div>
+          </div>
+
+          <div class="ornate-frame pool-area pool-area-expand">
+            <div class="pool-header">
+              <h3 class="section-title">🛍 购入物品列表</h3>
+              <span class="pool-count">{{ tradeBuyItems.length }} 项</span>
+            </div>
+            <table class="fantasy-table loot-table" v-if="tradeBuyItems.length">
+              <thead>
+                <tr>
+                  <th>名称</th>
+                  <th>类型/槽位</th>
+                  <th style="width:130px">数量</th>
+                  <th style="width:140px">单价(GP)</th>
+                  <th style="width:100px">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="item in tradeBuyItems"
+                  :key="item.client_id"
+                  class="loot-row"
+                >
+                  <td>
+                    <n-input v-model:value="item.name" placeholder="物品名称" size="small" />
+                  </td>
+                  <td>
+                    <div class="type-slot-cell">
+                      <n-select v-model:value="item.type" :options="itemTypeOptions" size="small" style="width:100px" />
+                      <n-select
+                        v-model:value="item.slot"
+                        :options="slotOptions"
+                        :disabled="item.type !== '装备'"
+                        clearable
+                        size="small"
+                        style="width:100px"
+                      />
+                    </div>
+                  </td>
+                  <td><n-input-number v-model:value="item.quantity" :min="1" size="small" style="width:120px" /></td>
+                  <td><n-input-number v-model:value="item.unit_price" :min="0" size="small" style="width:130px" /></td>
+                  <td>
+                    <div class="row-actions">
+                      <button class="icon-btn" title="详细编辑" @click="openTradeBuyItemEdit(item)">📝</button>
+                      <button class="icon-btn danger" title="删除" @click="removeTradeBuyItem(item.client_id)">🗑</button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <div v-else class="empty-hint">
+              暂无购入项，点击上方「新增购入项」或使用「AI录入」
             </div>
           </div>
         </div>
 
-        <!-- RIGHT: Warehouse Overview -->
         <div class="expense-sidebar">
           <div class="ornate-frame warehouse-overview-panel">
-            <h3 class="section-title">🏠 仓库物品概览</h3>
+            <h3 class="section-title">🏠 仓库卖出预览</h3>
             <div v-if="!warehouseItems.length" class="empty-hint" style="padding:12px">仓库暂无物品</div>
             <div v-else class="warehouse-overview-list">
               <div
@@ -312,6 +392,7 @@
     <AiInputModal
       v-model:show="aiModalShow"
       :parse-endpoint="mode === 'expense' ? '/api/ai/parse-expense' : '/api/ai/parse-loot'"
+      :expense-mode="mode === 'expense'"
       :expense-context="mode === 'expense' ? inventoryContext : ''"
       :warehouse-items="mode === 'expense' ? warehouseItems : []"
       @confirm="onAiConfirm"
@@ -413,6 +494,7 @@ const lootAutoRule = ref('average');
 
 // ======================== EXPENSE MODE STATE ========================
 const expenseItems = ref([]);
+const tradeBuyItems = ref([]);
 const expenseNote = ref('');
 let expenseSeqCounter = 1;
 
@@ -423,6 +505,19 @@ function uid() {
 
 function nextExpenseSeq() {
   return expenseSeqCounter++;
+}
+
+function formatAmount(value) {
+  const raw = Number(value || 0);
+  const num = Math.abs(raw) < 1e-9 ? 0 : raw;
+  if (!Number.isFinite(num)) return '0';
+  return num.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+}
+
+function clampRefundPercent(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 100;
+  return Math.min(100, Math.max(0, num));
 }
 
 // ======================== LOOT MODE FUNCTIONS ========================
@@ -566,7 +661,8 @@ function openItemEdit(item) {
 }
 
 function onItemEditSave(data) {
-  const item = lootItems.value.find((x) => x.client_id === data.client_id);
+  const item = lootItems.value.find((x) => x.client_id === data.client_id)
+    || tradeBuyItems.value.find((x) => x.client_id === data.client_id);
   if (item) {
     Object.assign(item, data);
   }
@@ -700,7 +796,6 @@ async function publishLoot() {
 
 // ======================== EXPENSE MODE FUNCTIONS ========================
 
-// Warehouse select options for expense mode
 const warehouseSelectOptions = computed(() =>
   warehouseItems.value.map((x, idx) => ({
     label: `#${idx + 1} ${x.name} (${x.type}) ×${x.quantity} ${x.unit_price}gp`,
@@ -708,9 +803,7 @@ const warehouseSelectOptions = computed(() =>
   }))
 );
 
-// Warehouse overview for expense right sidebar
 const warehouseOverview = computed(() => {
-  // Build a map of warehouse_id -> total quantity being expensed
   const expenseMap = {};
   for (const item of expenseItems.value) {
     if (item.warehouse_id) {
@@ -732,6 +825,34 @@ const warehouseOverview = computed(() => {
   });
 });
 
+const expenseSellBaseTotal = computed(() => expenseItems.value.reduce((sum, item) => {
+  if ((item.type || '') === '金钱') return sum;
+  return sum + Math.abs(Number(item.quantity || 0)) * Math.abs(Number(item.unit_price || 0));
+}, 0));
+
+const expenseRefundTotal = computed(() => expenseItems.value.reduce((sum, item) => {
+  if ((item.type || '') === '金钱') return sum;
+  const base = Math.abs(Number(item.quantity || 0)) * Math.abs(Number(item.unit_price || 0));
+  return sum + base * (clampRefundPercent(item.refund_percent) / 100);
+}, 0));
+
+const expenseOverallPercent = computed(() => {
+  const base = expenseSellBaseTotal.value;
+  if (base <= 0) return 0;
+  return (expenseRefundTotal.value / base) * 100;
+});
+
+const tradePurchaseTotal = computed(() => tradeBuyItems.value.reduce(
+  (sum, item) => sum + Math.abs(Number(item.quantity || 0)) * Math.abs(Number(item.unit_price || 0)),
+  0
+));
+
+const tradeSpentGoldTotal = computed(() => expenseItems.value
+  .filter((item) => (item.type || '') === '金钱')
+  .reduce((sum, item) => sum + Math.abs(Number(item.quantity || 0)) * Math.abs(Number(item.unit_price || 0)), 0));
+
+const tradeNetGpDelta = computed(() => expenseRefundTotal.value - tradeSpentGoldTotal.value);
+
 function newExpenseItem() {
   return {
     client_id: uid(),
@@ -740,7 +861,22 @@ function newExpenseItem() {
     type: '其他',
     quantity: 1,
     unit_price: 0,
-    warehouse_id: ''
+    warehouse_id: '',
+    refund_percent: 100
+  };
+}
+
+function newTradeBuyItem() {
+  return {
+    client_id: uid(),
+    name: '',
+    type: '其他',
+    slot: null,
+    quantity: 1,
+    unit_price: 0,
+    weight: 0,
+    description: '',
+    display_description: ''
   };
 }
 
@@ -748,8 +884,21 @@ function addExpenseItem() {
   expenseItems.value.push(newExpenseItem());
 }
 
+function addTradeBuyItem() {
+  tradeBuyItems.value.push(newTradeBuyItem());
+}
+
 function removeExpenseItem(clientId) {
   expenseItems.value = expenseItems.value.filter((x) => x.client_id !== clientId);
+}
+
+function removeTradeBuyItem(clientId) {
+  tradeBuyItems.value = tradeBuyItems.value.filter((x) => x.client_id !== clientId);
+}
+
+function openTradeBuyItemEdit(item) {
+  itemEditData.value = { ...item };
+  itemEditShow.value = true;
 }
 
 function onSelectWarehouseItem(expenseItem, warehouseId) {
@@ -758,6 +907,7 @@ function onSelectWarehouseItem(expenseItem, warehouseId) {
     expenseItem.name = '';
     expenseItem.type = '其他';
     expenseItem.unit_price = 0;
+    expenseItem.refund_percent = 100;
     return;
   }
   const wItem = warehouseItems.value.find((x) => x.id === warehouseId);
@@ -767,51 +917,79 @@ function onSelectWarehouseItem(expenseItem, warehouseId) {
     expenseItem.type = wItem.type;
     expenseItem.unit_price = Number(wItem.unit_price || 0);
     expenseItem.quantity = Math.min(expenseItem.quantity || 1, Number(wItem.quantity));
+    if ((wItem.type || '') === '金钱') {
+      expenseItem.refund_percent = 0;
+    } else if (expenseItem.refund_percent == null || Number.isNaN(Number(expenseItem.refund_percent))) {
+      expenseItem.refund_percent = 100;
+    }
   }
 }
 
-// Publish Expense
 async function publishExpense() {
-  if (!expenseItems.value.length) {
-    message.warning('请先添加支出项');
+  if (!expenseItems.value.length && !tradeBuyItems.value.length) {
+    message.warning('请至少添加卖出项或购入项');
     return;
   }
   for (const item of expenseItems.value) {
     if (!item.name) {
-      message.warning('存在未填写名称的支出项');
+      message.warning('存在未填写名称的卖出项');
       return;
     }
     if (Number(item.quantity || 0) <= 0) {
-      message.warning(`支出项 ${item.name} 数量必须大于0`);
+      message.warning(`卖出项 ${item.name} 数量必须大于0`);
       return;
     }
   }
+  for (const item of tradeBuyItems.value) {
+    if (!item.name) {
+      message.warning('存在未填写名称的购入项');
+      return;
+    }
+    if (Number(item.quantity || 0) <= 0) {
+      message.warning(`购入项 ${item.name} 数量必须大于0`);
+      return;
+    }
+  }
+
   publishing.value = true;
   try {
-    const publishItems = expenseItems.value.map((x) => ({
+    const sellItems = expenseItems.value.map((x) => ({
       name: x.name,
       type: x.type,
       quantity: Math.abs(Number(x.quantity || 0)),
       unit_price: Math.abs(Number(x.unit_price || 0)),
-      warehouse_id: x.warehouse_id || ''
+      warehouse_id: x.warehouse_id || '',
+      refund_percent: clampRefundPercent(x.refund_percent)
+    }));
+    const buyItems = tradeBuyItems.value.map((x) => ({
+      name: x.name,
+      type: x.type,
+      slot: x.type === '装备' ? x.slot || null : null,
+      quantity: Math.abs(Number(x.quantity || 0)),
+      unit_price: Math.abs(Number(x.unit_price || 0)),
+      weight: Math.abs(Number(x.weight || 0)),
+      description: x.description || '',
+      display_description: x.display_description || '',
+      allocations: []
     }));
 
     await apiRequest('/api/loot-records/publish', {
       method: 'POST',
       body: {
-        lootItems: publishItems,
+        lootItems: sellItems,
+        buyItems,
         goldItems: [],
         distribution: {},
         note: expenseNote.value,
         memo_text: '',
-        mode: 'expense'
+        mode: 'trade'
       }
     });
     clearExpenseDraft();
     await loadWarehouseItems();
-    message.success('支出记录完成');
+    message.success('交易记录完成');
   } catch (error) {
-    message.error(error.message || '支出失败');
+    message.error(error.message || '交易失败');
   } finally {
     publishing.value = false;
   }
@@ -837,6 +1015,7 @@ async function openAiModal() {
 
 function onAiConfirm(result) {
   const items = result.items || [];
+  const buyItems = result.buyItems || [];
   if (mode.value === 'expense') {
     for (const x of items) {
       const seq = Number(x.seq || 0);
@@ -849,8 +1028,23 @@ function onAiConfirm(result) {
         newItem.type = wItem.type || '其他';
         newItem.quantity = Math.min(qty, Number(wItem.quantity || qty));
         newItem.unit_price = Number(wItem.unit_price || 0);
+        newItem.refund_percent = (wItem.type || '') === '金钱'
+          ? 0
+          : clampRefundPercent(x.refund_percent);
         expenseItems.value.push(newItem);
       }
+    }
+    for (const x of buyItems) {
+      const newItem = newTradeBuyItem();
+      newItem.name = x.name || '';
+      newItem.type = x.type || '其他';
+      newItem.slot = x.type === '装备' ? (x.slot || null) : null;
+      newItem.quantity = Math.abs(Number(x.quantity || 1));
+      newItem.unit_price = Math.abs(Number(x.unit_price || 0));
+      newItem.weight = Math.abs(Number(x.weight || 0));
+      newItem.description = x.description || '';
+      newItem.display_description = x.display_description || '';
+      tradeBuyItems.value.push(newItem);
     }
     if (result.note && !expenseNote.value) {
       expenseNote.value = result.note;
@@ -875,7 +1069,7 @@ function onAiConfirm(result) {
       lootNote.value = result.note;
     }
   }
-  if (items.length) {
+  if (items.length || buyItems.length) {
     message.success('AI内容已追加到草稿');
   }
 }
@@ -920,8 +1114,39 @@ function clearLootDraft() {
 function serializeExpenseDraft() {
   return {
     expenseItems: expenseItems.value,
+    tradeBuyItems: tradeBuyItems.value,
     note: expenseNote.value,
     seqCounter: expenseSeqCounter
+  };
+}
+
+function normalizeExpenseDraftItem(item) {
+  return {
+    client_id: uid(),
+    seq: 0,
+    name: '',
+    type: '其他',
+    quantity: 1,
+    unit_price: 0,
+    warehouse_id: '',
+    refund_percent: 100,
+    ...item,
+    refund_percent: clampRefundPercent(item?.refund_percent)
+  };
+}
+
+function normalizeTradeBuyDraftItem(item) {
+  return {
+    client_id: uid(),
+    name: '',
+    type: '其他',
+    slot: null,
+    quantity: 1,
+    unit_price: 0,
+    weight: 0,
+    description: '',
+    display_description: '',
+    ...item
   };
 }
 
@@ -930,7 +1155,12 @@ function loadExpenseDraft() {
   if (!text) return false;
   try {
     const parsed = JSON.parse(text);
-    expenseItems.value = Array.isArray(parsed.expenseItems) ? parsed.expenseItems : [];
+    expenseItems.value = Array.isArray(parsed.expenseItems)
+      ? parsed.expenseItems.map(normalizeExpenseDraftItem)
+      : [];
+    tradeBuyItems.value = Array.isArray(parsed.tradeBuyItems)
+      ? parsed.tradeBuyItems.map(normalizeTradeBuyDraftItem)
+      : [];
     expenseNote.value = parsed.note || '';
     expenseSeqCounter = parsed.seqCounter || (expenseItems.value.length + 1);
     return true;
@@ -941,10 +1171,11 @@ function loadExpenseDraft() {
 
 function clearExpenseDraft() {
   expenseItems.value = [];
+  tradeBuyItems.value = [];
   expenseNote.value = '';
   expenseSeqCounter = 1;
   localStorage.removeItem(expenseDraftKey);
-  message.success('支出草稿已清空');
+  message.success('交易草稿已清空');
 }
 
 // ======================== DATA LOADING ========================
@@ -1076,6 +1307,37 @@ onMounted(async () => {
 
 /* Notes */
 .notes-section { margin-bottom: 16px; }
+.trade-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+@media (max-width: 1100px) {
+  .trade-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 640px) {
+  .trade-summary-grid { grid-template-columns: 1fr; }
+}
+.trade-summary-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+}
+.ts-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.ts-value {
+  font-size: 16px;
+  color: var(--gold);
+}
+.ts-value.positive { color: var(--success, #2ecc71); }
+.ts-value.negative { color: var(--danger); }
 
 /* Sidebar */
 .loot-sidebar { display: flex; flex-direction: column; gap: 16px; }

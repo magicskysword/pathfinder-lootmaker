@@ -250,7 +250,7 @@
                   </tr>
                   <tr>
                     <td><code v-pre>{{expense_structure}}</code></td>
-                    <td>支出解析的 JSON 数据结构模板</td>
+                    <td>交易解析的 JSON 数据结构模板</td>
                     <td>全部</td>
                   </tr>
                   <tr>
@@ -261,12 +261,12 @@
                   <tr>
                     <td><code v-pre>{{types}}</code></td>
                     <td>仓库中已有的物品类型列表（自动生成）</td>
-                    <td>Loot 解析</td>
+                    <td>Loot / 交易解析</td>
                   </tr>
                   <tr>
                     <td><code v-pre>{{slots}}</code></td>
                     <td>仓库中已有的装备槽位列表（自动生成）</td>
-                    <td>Loot 解析</td>
+                    <td>Loot / 交易解析</td>
                   </tr>
                 </tbody>
               </table>
@@ -602,7 +602,7 @@ const savingPrompts = ref(false);
 
 const promptEditors = [
   { key: 'prompt_loot', icon: '📥', label: 'Loot 解析提示词' },
-  { key: 'prompt_expense', icon: '📤', label: '支出解析提示词' },
+  { key: 'prompt_expense', icon: '💱', label: '交易解析提示词' },
   { key: 'prompt_character', icon: '👤', label: '角色解析提示词' }
 ];
 
