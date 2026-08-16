@@ -193,7 +193,7 @@
               <n-button type="primary" :loading="publishing" @click="publishExpense">📜 确认交易</n-button>
             </div>
             <div class="toolbar-hint">
-              交易模式：可从仓库卖出物品并设置返还比例，也可录入新购入的物品。若要支付金币，请在卖出列表中加入金币项并将返还设为 0%。AI 录入时会同时解析卖出项与购入项。
+              交易模式：可从仓库卖出物品并设置返还比例，也可录入新购入的物品。购入项默认勾选「付费」，确认交易时会按数量 × 单价自动扣除仓库金币。
             </div>
           </div>
 
@@ -217,6 +217,10 @@
               <div class="trade-summary-card">
                 <span class="ts-label">总购入 GP</span>
                 <strong class="ts-value">{{ formatAmount(tradePurchaseTotal) }} gp</strong>
+              </div>
+              <div class="trade-summary-card">
+                <span class="ts-label">自动付费 GP</span>
+                <strong class="ts-value">{{ formatAmount(tradeAutomaticPaymentTotal) }} gp</strong>
               </div>
               <div class="trade-summary-card">
                 <span class="ts-label">净金币变化</span>
@@ -310,6 +314,7 @@
                   <th>类型/槽位</th>
                   <th style="width:130px">数量</th>
                   <th style="width:140px">单价(GP)</th>
+                  <th style="width:80px">付费</th>
                   <th style="width:100px">操作</th>
                 </tr>
               </thead>
@@ -337,6 +342,9 @@
                   </td>
                   <td><n-input-number v-model:value="item.quantity" :min="1" size="small" style="width:120px" /></td>
                   <td><n-input-number v-model:value="item.unit_price" :min="0" size="small" style="width:130px" /></td>
+                  <td>
+                    <n-checkbox v-model:checked="item.paid" title="取消勾选则只将物品入库，不扣除金币">付费</n-checkbox>
+                  </td>
                   <td>
                     <div class="row-actions">
                       <button class="icon-btn" title="详细编辑" @click="openTradeBuyItemEdit(item)">📝</button>
@@ -847,11 +855,18 @@ const tradePurchaseTotal = computed(() => tradeBuyItems.value.reduce(
   0
 ));
 
+const tradeAutomaticPaymentTotal = computed(() => tradeBuyItems.value.reduce((sum, item) => {
+  if (item.paid === false) return sum;
+  return sum + Math.abs(Number(item.quantity || 0)) * Math.abs(Number(item.unit_price || 0));
+}, 0));
+
 const tradeSpentGoldTotal = computed(() => expenseItems.value
   .filter((item) => (item.type || '') === '金钱')
   .reduce((sum, item) => sum + Math.abs(Number(item.quantity || 0)) * Math.abs(Number(item.unit_price || 0)), 0));
 
-const tradeNetGpDelta = computed(() => expenseRefundTotal.value - tradeSpentGoldTotal.value);
+const tradeNetGpDelta = computed(() => (
+  expenseRefundTotal.value - tradeSpentGoldTotal.value - tradeAutomaticPaymentTotal.value
+));
 
 function newExpenseItem() {
   return {
@@ -874,6 +889,7 @@ function newTradeBuyItem() {
     slot: null,
     quantity: 1,
     unit_price: 0,
+    paid: true,
     weight: 0,
     description: '',
     display_description: ''
@@ -967,6 +983,7 @@ async function publishExpense() {
       slot: x.type === '装备' ? x.slot || null : null,
       quantity: Math.abs(Number(x.quantity || 0)),
       unit_price: Math.abs(Number(x.unit_price || 0)),
+      paid: x.paid !== false,
       weight: Math.abs(Number(x.weight || 0)),
       description: x.description || '',
       display_description: x.display_description || '',
@@ -1146,7 +1163,8 @@ function normalizeTradeBuyDraftItem(item) {
     weight: 0,
     description: '',
     display_description: '',
-    ...item
+    ...item,
+    paid: item?.paid !== false
   };
 }
 
@@ -1309,7 +1327,7 @@ onMounted(async () => {
 .notes-section { margin-bottom: 16px; }
 .trade-summary-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
   margin-top: 12px;
 }

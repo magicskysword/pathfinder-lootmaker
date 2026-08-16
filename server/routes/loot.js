@@ -73,6 +73,77 @@ async function creditRefundGpToWarehouse(db, amount, now) {
   await mergeMoneyItems(db, { names: ['金币'] });
 }
 
+async function debitGoldFromWarehouse(db, amount, now) {
+  const paymentAmount = roundCurrency(amount);
+  if (paymentAmount <= 0) return;
+
+  // 金币余额以 quantity 记录；历史数据中金钱项的 unit_price 不一定为 1。
+  const goldItems = await db.all(
+    `SELECT id, quantity
+     FROM items
+     WHERE type = ? AND TRIM(name) = '金币'
+     ORDER BY created_at ASC`,
+    [MONEY_TYPE]
+  );
+  const availableAmount = roundCurrency(goldItems.reduce(
+    (sum, item) => sum + Math.max(0, Number(item.quantity || 0)),
+    0
+  ));
+
+  if (availableAmount + 1e-9 < paymentAmount) {
+    const error = new Error(
+      `金币不足：需要 ${paymentAmount} gp，仓库可用 ${availableAmount} gp`
+    );
+    error.status = 400;
+    throw error;
+  }
+
+  let remaining = paymentAmount;
+  for (const item of goldItems) {
+    if (remaining <= 1e-9) break;
+    const quantity = Math.max(0, Number(item.quantity || 0));
+    const deducted = Math.min(quantity, remaining);
+    const nextQuantity = roundCurrency(quantity - deducted);
+
+    if (nextQuantity <= 1e-9) {
+      await db.run('DELETE FROM item_allocations WHERE item_id = ?', [item.id]);
+      await db.run('DELETE FROM items WHERE id = ?', [item.id]);
+    } else {
+      await db.run(
+        'UPDATE items SET quantity = ?, updated_at = ? WHERE id = ?',
+        [nextQuantity, now, item.id]
+      );
+      const allocations = await db.all(
+        'SELECT id, quantity FROM item_allocations WHERE item_id = ? ORDER BY created_at ASC',
+        [item.id]
+      );
+      const totalAllocated = allocations.reduce((sum, allocation) => (
+        sum + Number(allocation.quantity || 0)
+      ), 0);
+      if (totalAllocated > nextQuantity) {
+        let allocatable = nextQuantity;
+        for (const allocation of allocations) {
+          const nextAllocationQuantity = Math.min(
+            Number(allocation.quantity || 0),
+            allocatable
+          );
+          if (nextAllocationQuantity <= 0) {
+            await db.run('DELETE FROM item_allocations WHERE id = ?', [allocation.id]);
+          } else {
+            await db.run(
+              'UPDATE item_allocations SET quantity = ?, updated_at = ? WHERE id = ?',
+              [nextAllocationQuantity, now, allocation.id]
+            );
+          }
+          allocatable = roundCurrency(allocatable - nextAllocationQuantity);
+        }
+      }
+    }
+
+    remaining = roundCurrency(remaining - deducted);
+  }
+}
+
 function safeParse(value, fallback) {
   try {
     return JSON.parse(value);
@@ -302,6 +373,16 @@ router.post('/publish', async (req, res, next) => {
           (sum, item) => sum + roundCurrency(Number(item.quantity || 0) * Number(item.unit_price || 0)),
           0
         );
+        const automaticPaymentTotal = purchaseItems.reduce((sum, item) => {
+          if (item.paid === false) return sum;
+          const quantity = Math.max(0, Number(item.quantity || 0));
+          const unitPrice = Math.max(0, Number(item.unit_price || 0));
+          return sum + roundCurrency(quantity * unitPrice);
+        }, 0);
+        if (automaticPaymentTotal > 0) {
+          await debitGoldFromWarehouse(db, automaticPaymentTotal, now);
+          spentMoneyTotal = roundCurrency(spentMoneyTotal + automaticPaymentTotal);
+        }
         const moneyNames = [];
         for (const item of purchaseItems) {
           const quantity = Number(item.quantity || 0);
@@ -360,6 +441,7 @@ router.post('/publish', async (req, res, next) => {
           note || '',
           `卖出原值 ${roundCurrency(soldNonMoneyTotal)} gp`,
           `金币支出 ${roundCurrency(spentMoneyTotal)} gp`,
+          `其中购入自动付费 ${roundCurrency(automaticPaymentTotal)} gp`,
           `返还所得 ${roundCurrency(refundGpTotal)} gp`,
           `购入原值 ${roundCurrency(purchasedValueTotal)} gp`
         ].filter(Boolean).join('；');
@@ -470,6 +552,9 @@ router.post('/publish', async (req, res, next) => {
       throw error;
     }
   } catch (error) {
+    if (error.status) {
+      return res.status(error.status).json({ message: error.message });
+    }
     return next(error);
   }
 });
